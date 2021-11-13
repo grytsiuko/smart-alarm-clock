@@ -1,13 +1,18 @@
 #include <Wire.h> 
 #include <LiquidCrystal_I2C.h>
 #include <iarduino_RTC.h>
+#include <IRremote.h>
 
-iarduino_RTC time(RTC_DS1302,6,8,7);
-
-LiquidCrystal_I2C lcd(0x27,16,2);
 const int RED_PIN = 9;
 const int GREEN_PIN = 10;
 const int BLUE_PIN = 11;
+const int RECV_PIN = 4;
+
+iarduino_RTC time(RTC_DS1302,6,7,8);
+LiquidCrystal_I2C lcd(0x27,16,2);
+IRrecv irrecv(RECV_PIN);
+
+decode_results results;
 
 struct Color {
   int red;
@@ -148,6 +153,13 @@ class LcdView {
       lcd.print(color.green);
       lcd.print(",");
       lcd.print(color.blue);
+      lcd.setCursor(0, 2);
+      lcd.print(time.gettime("H:i:s"));
+      lcd.setCursor(0, 3);
+      if (irrecv.decode(&results)){
+            lcd.print(results.value, HEX);
+            irrecv.resume();
+      }
       step = 0;
     }
   }
@@ -197,6 +209,10 @@ Controller controller(lightModel, lightView, lcdView);
 void setup(){
   lcd.init();                     
   lcd.backlight();
+  time.begin();
+  irrecv.enableIRIn();
+  irrecv.blink13(true);
+//  time.settime(0, 13, 21, 13, 11, 21, 7); 
 }
 
 void loop(){
