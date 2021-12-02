@@ -5,10 +5,10 @@
 
 const int RED_PIN = 9;
 const int GREEN_PIN = 10;
-const int BLUE_PIN = 11;
+const int BLUE_PIN = 5;
 const int RECV_PIN = 4;
 
-iarduino_RTC time(RTC_DS1302,6,7,8);
+iarduino_RTC rtc(RTC_DS1302,6,7,8);
 LiquidCrystal_I2C lcd(0x27,16,2);
 IRrecv irrecv(RECV_PIN);
 
@@ -19,6 +19,15 @@ struct Color {
   int green;
   int blue;
 };
+
+struct Time {
+  int hours;
+  int minutes;
+  int seconds;
+};
+
+const Time DEFAULT_ALARM{22, 59, 030};
+const int ALARM_START_THRESHOLD_SECONDS = 2;
 
 const int GRADIENT_LENGTH = 10;
 const Color GRADIENT_SEQUENCE[] = {
@@ -36,11 +45,11 @@ const Color GRADIENT_SEQUENCE[] = {
 
 const int DELAY_LENGTH = 10;
 
-const long GRADIENT_DURATION = 10L * 1000;
-const int GRADIENT_STEP_DURATION = GRADIENT_DURATION / GRADIENT_LENGTH;
+const int GRADIENT_DURATION_SECONDS = 10;
+const int GRADIENT_STEP_DURATION = GRADIENT_DURATION_SECONDS * 1000 / GRADIENT_LENGTH;
 const int GRADIENT_STEP_ITERATIONS = GRADIENT_STEP_DURATION / DELAY_LENGTH;
 
-const int LCD_UPDATE_DELAY_STEPS = 50;
+const int LCD_UPDATE_DELAY_STEPS = 10;
 
 
 
@@ -81,11 +90,8 @@ class LightModel {
   }
 
   void start() {
+    reset();
     started = true;
-    finished = false;
-    step = 0;
-    iteration = 0;
-    color = GRADIENT_SEQUENCE[0];
   }
 
   void update() {
@@ -111,6 +117,96 @@ class LightModel {
     const int newBlue = currStepColor.blue + (nextStepColor.blue - currStepColor.blue) * 1. * iteration / GRADIENT_STEP_ITERATIONS;
     color = {newRed, newGreen, newBlue};
   }
+
+  String getStatus() {
+    if (finished) {
+      return "++";
+    }
+    if (started) {
+      return "--";
+    }
+    return "..";
+  }
+};
+
+
+class ClockModel {
+
+  private:
+
+  int timeToSeconds(const Time &t) {
+    long hours = t.hours;
+    long minutes = hours * 60 + t.minutes;
+    long seconds = minutes * 60 + t.seconds;
+    return seconds;
+  }
+
+  long secondsInDay = 24 * 60 * 60;
+
+  public:
+
+  ClockModel() = default;
+
+
+  void setup() {
+    rtc.begin();
+//  rtc.settime(0, 45, 22, 13, 11, 21, 7); 
+  }
+
+  String getCurrentTime() {
+    return rtc.gettime("H:i:s");
+  }
+
+  bool shouldGradientStart(const Time &alarm, int gradientDuration) {
+    long alarmSeconds = timeToSeconds(alarm);
+    long gradientStartSeconds = (alarmSeconds - gradientDuration + secondsInDay) % secondsInDay;
+    
+    long currentSeconds = timeToSeconds({rtc.hours + (rtc.midday ? 12 : 0), rtc.minutes, rtc.seconds});
+    long differenceSeconds = abs(currentSeconds - gradientStartSeconds);
+    
+    return differenceSeconds <= ALARM_START_THRESHOLD_SECONDS || differenceSeconds >= (secondsInDay - ALARM_START_THRESHOLD_SECONDS);
+  }
+};
+
+
+class IRModel {
+
+  public:
+
+  IRModel() = default;
+
+
+  void setup() {
+    irrecv.enableIRIn();
+    irrecv.blink13(true);
+  }
+};
+
+
+class SettingsModel {
+
+  private:
+
+  Time alarm = DEFAULT_ALARM;
+  int gradientDuration = GRADIENT_DURATION_SECONDS;
+
+  public:
+
+  SettingsModel() = default;
+
+
+  void setup() {
+    irrecv.enableIRIn();
+    irrecv.blink13(true);
+  }
+
+  const Time &getAlarm() {
+    return alarm;
+  }
+
+  int getGradientDuration() {
+    return gradientDuration;
+  }
 };
 
 
@@ -134,32 +230,57 @@ class LightView {
 
 class LcdView {
 
+  private:
+
   int step;
+
+  void printColor(const Color &color, const String &status) {
+      lcd.setCursor(0, 0);
+      lcd.print("                    ");
+      lcd.setCursor(0, 0);
+      lcd.print(status);
+      lcd.print(color.red);
+      lcd.print(",");
+      lcd.print(color.green);
+      lcd.print(",");
+      lcd.print(color.blue);
+  }
+
+  String padNumber(int a) {
+    return a < 10 ? String("0") + String(a) : String(a);
+  }
+
+  void printTime(const String &currentTime, const Time &alarmTime) {
+      lcd.setCursor(0, 2);
+      lcd.print("CLOCK: ");
+      lcd.print(currentTime);
+      lcd.setCursor(0, 3);
+      lcd.print("ALARM: ");
+      lcd.print(padNumber(alarmTime.hours) + ":" + padNumber(alarmTime.minutes) + ":" + padNumber(alarmTime.seconds));
+  }
 
   public:
 
   LcdView() {
     step = 0;
   }
+  
+  void setup(){
+    lcd.init();                     
+    lcd.backlight();
+  }
 
-  void update(const Color &color) {
+  void update(const Color &color, const String &status, const String &currentTime, const Time &alarmTime) {
     step++;
     if (step == LCD_UPDATE_DELAY_STEPS) {
-      lcd.setCursor(0, 0);
-      lcd.print("                    ");
-      lcd.setCursor(0, 0);
-      lcd.print(color.red);
-      lcd.print(",");
-      lcd.print(color.green);
-      lcd.print(",");
-      lcd.print(color.blue);
-      lcd.setCursor(0, 2);
-      lcd.print(time.gettime("H:i:s"));
+      printColor(color, status);
+      printTime(currentTime, alarmTime);
       lcd.setCursor(0, 3);
-      if (irrecv.decode(&results)){
-            lcd.print(results.value, HEX);
-            irrecv.resume();
-      }
+//      if (irrecv.decode(&results)){
+//            lcd.print(results.value, HEX);
+//            lcd.print(typeid(results.value).name());
+//            irrecv.resume();
+//      }
       step = 0;
     }
   }
@@ -172,47 +293,71 @@ class Controller {
 
   private:
 
+  SettingsModel settingsModel;
   LightModel lightModel;
+  ClockModel clockModel;
+  IRModel irModel;
   LightView lightView;
   LcdView lcdView;
   
   public:
 
-  Controller(const LightModel &lightModel, const LightView &lightView, const LcdView &lcdView) {
+  Controller(
+    const SettingsModel &settingsModel, const LightModel &lightModel, const ClockModel &clockModel, const IRModel &irModel, 
+    const LightView &lightView, const LcdView &lcdView
+  ) {
+    this->settingsModel = settingsModel;
     this->lightModel = lightModel;
+    this->clockModel = clockModel;
+    this->irModel = irModel;
     this->lightView = lightView;
     this->lcdView = lcdView;
   }
 
+  void setup() {
+    Serial.begin(9600);
+    lcdView.setup();
+    clockModel.setup();
+    irModel.setup();
+  }
+
   void execute() {
-    if (lightModel.isFinished()) {
-      lightModel.reset();
-    } else 
-    if (!lightModel.isStarted()) {
-      lightModel.start();
-    } else {
-      lightModel.update();
+//    if (lightModel.isFinished()) {
+//      lightModel.reset();
+//    } else 
+//    if (!lightModel.isStarted()) {
+//      lightModel.start();
+//    } else {
+//      lightModel.update();
+//    }
+    if (!lightModel.isFinished()) {
+      if (!lightModel.isStarted()) {
+        if (clockModel.shouldGradientStart(settingsModel.getAlarm(), settingsModel.getGradientDuration())) {
+          lightModel.start();
+        }
+      } else {
+        lightModel.update();
+      }
     }
+    
     lightView.update(lightModel.getColor());
-    lcdView.update(lightModel.getColor());
+    lcdView.update(lightModel.getColor(), lightModel.getStatus(), clockModel.getCurrentTime(), settingsModel.getAlarm());
   }
 };
 
 
 
-
+SettingsModel settingsModel;
 LightModel lightModel;
+ClockModel clockModel;
+IRModel irModel;
 LightView lightView;
 LcdView lcdView;
-Controller controller(lightModel, lightView, lcdView);
+Controller controller(settingsModel, lightModel, clockModel, irModel, lightView, lcdView);
+
 
 void setup(){
-  lcd.init();                     
-  lcd.backlight();
-  time.begin();
-  irrecv.enableIRIn();
-  irrecv.blink13(true);
-//  time.settime(0, 13, 21, 13, 11, 21, 7); 
+  controller.setup();
 }
 
 void loop(){
