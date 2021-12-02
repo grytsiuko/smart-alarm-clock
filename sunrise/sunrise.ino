@@ -8,6 +8,32 @@ const int GREEN_PIN = 10;
 const int BLUE_PIN = 5;
 const int RECV_PIN = 4;
 
+/*
+ * FFA25D CH- 
+ * FF629D CH
+ * FFE21D CH+
+ * FF22DD PREV
+ * FF02FD NEXT
+ * FFC23D PLAY/PAUSE
+ * FFE01F VOL-
+ * FFA857 VOL+
+ * FF906F EQ
+ * FF6897 0
+ * FF9867 100+
+ * FFB04F 200+
+ * FF30CF 1
+ * FF18E7 2
+ * FF7A85 3
+ * FF10EF 4
+ * FF38C7 5
+ * FF5AA5 6
+ * FF42BD 7
+ * FF4AB5 8
+ * FF52AD 9
+ */
+
+const unsigned long SIGNAL_PLAY_PAUSE = 0xFFC23D;
+
 iarduino_RTC rtc(RTC_DS1302,6,7,8);
 LiquidCrystal_I2C lcd(0x27,16,2);
 IRrecv irrecv(RECV_PIN);
@@ -45,11 +71,11 @@ const Color GRADIENT_SEQUENCE[] = {
 
 const int DELAY_LENGTH = 10;
 
-const int GRADIENT_DURATION_SECONDS = 10;
+const int GRADIENT_DURATION_SECONDS = 5;
 const int GRADIENT_STEP_DURATION = GRADIENT_DURATION_SECONDS * 1000 / GRADIENT_LENGTH;
 const int GRADIENT_STEP_ITERATIONS = GRADIENT_STEP_DURATION / DELAY_LENGTH;
 
-const int LCD_UPDATE_DELAY_STEPS = 10;
+const int LCD_UPDATE_DELAY_STEPS = 50;
 
 
 
@@ -180,6 +206,16 @@ class IRModel {
     irrecv.enableIRIn();
     irrecv.blink13(true);
   }
+
+  unsigned long get() {
+    if (irrecv.decode(&results)){
+      Serial.println(results.value, HEX);
+      unsigned long value = results.value;
+      irrecv.resume();
+      return value;
+    }
+    return 0;
+  }
 };
 
 
@@ -275,12 +311,6 @@ class LcdView {
     if (step == LCD_UPDATE_DELAY_STEPS) {
       printColor(color, status);
       printTime(currentTime, alarmTime);
-      lcd.setCursor(0, 3);
-//      if (irrecv.decode(&results)){
-//            lcd.print(results.value, HEX);
-//            lcd.print(typeid(results.value).name());
-//            irrecv.resume();
-//      }
       step = 0;
     }
   }
@@ -330,6 +360,16 @@ class Controller {
 //    } else {
 //      lightModel.update();
 //    }
+
+    unsigned long signal = irModel.get();
+    if (signal == SIGNAL_PLAY_PAUSE) {
+      if (lightModel.isStarted()) {
+        lightModel.reset();
+      } else {
+        lightModel.start();
+      }
+    }
+
     if (!lightModel.isFinished()) {
       if (!lightModel.isStarted()) {
         if (clockModel.shouldGradientStart(settingsModel.getAlarm(), settingsModel.getGradientDuration())) {
