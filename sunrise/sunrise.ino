@@ -3,9 +3,9 @@
 #include <iarduino_RTC.h>
 #include <IRremote.h>
 
-const int RED_PIN = 9;
+const int RED_PIN = 5;
 const int GREEN_PIN = 10;
-const int BLUE_PIN = 5;
+const int BLUE_PIN = 9;
 const int RECV_PIN = 4;
 
 /*
@@ -34,7 +34,7 @@ const int RECV_PIN = 4;
 
 const unsigned long SIGNAL_PLAY_PAUSE = 0xFFC23D;
 
-iarduino_RTC rtc(RTC_DS1302,6,7,8);
+iarduino_RTC rtc(RTC_DS1302,3,12,2);
 LiquidCrystal_I2C lcd(0x27,16,2);
 IRrecv irrecv(RECV_PIN);
 
@@ -52,7 +52,7 @@ struct Time {
   int seconds;
 };
 
-const Time DEFAULT_ALARM{23, 22, 30};
+const Time DEFAULT_ALARM{23, 22, 20};
 const int ALARM_START_THRESHOLD_SECONDS = 2;
 
 const int GRADIENT_LENGTH = 9;
@@ -68,9 +68,11 @@ const Color GRADIENT_SEQUENCE[] = {
   {200, 200, 200}
 };
 
+const int MAX_FINISHED_TIME_SECONDS = 10;
+
 const int DELAY_LENGTH = 10;
 
-const int GRADIENT_DURATION_SECONDS = 20;
+const int GRADIENT_DURATION_SECONDS = 5;
 const int GRADIENT_STEP_DURATION = GRADIENT_DURATION_SECONDS * 1000 / GRADIENT_LENGTH;
 const int GRADIENT_STEP_ITERATIONS = GRADIENT_STEP_DURATION / DELAY_LENGTH;
 
@@ -117,6 +119,16 @@ class LightModel {
     reset();
     started = true;
     this->startTime = millis();
+  }
+
+  void deadTimer() {
+    if (!finished) {
+      return;
+    }
+    unsigned long currTime = millis();
+    if (currTime - startTime > 1000 * (MAX_FINISHED_TIME_SECONDS + GRADIENT_DURATION_SECONDS)) {
+      reset();
+    }
   }
 
   void update(int gradientDuration) {
@@ -186,6 +198,7 @@ class ClockModel {
     return seconds;
   }
 
+  unsigned long startTime;
   long secondsInDay = 24 * 60 * 60;
 
   public:
@@ -200,10 +213,6 @@ class ClockModel {
 
   String getCurrentTime() {
     return rtc.gettime("H:i:s");
-  }
-
-  unsigned long getUnix() {
-    return rtc.Unix;
   }
 
   bool shouldGradientStart(const Time &alarm, int gradientDuration) {
@@ -388,6 +397,8 @@ class Controller {
         lightModel.start();
       }
     }
+
+    lightModel.deadTimer();
 
     if (!lightModel.isFinished()) {
       if (!lightModel.isStarted()) {
