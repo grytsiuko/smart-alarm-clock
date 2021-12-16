@@ -11,8 +11,8 @@ const int RED_PIN = 5;
 const int GREEN_PIN = 10;
 const int BLUE_PIN = 9;
 const int IR_RECV_PIN = 4;
-const int CLOCK_RST_PIN = 3;
-const int CLOCK_DAT_PIN = 2;
+const int CLOCK_RST_PIN = 6;
+const int CLOCK_DAT_PIN = 7;
 const int CLOCK_CLK_PIN = 12;
 
 iarduino_RTC rtc(RTC_DS1302, CLOCK_RST_PIN, CLOCK_CLK_PIN, CLOCK_DAT_PIN);
@@ -86,7 +86,8 @@ struct State {
 const int STATE_INPUT_INTEGER_MAX_LENGTH = 3;
 const int STATE_INPUT_NAN = -1;
 
-const Time DEFAULT_ALARM{17, 0, 15};
+const Time DEFAULT_ALARM{23, 0, 0};
+const Time DEFAULT_CURRENT_TIME{22, 45, 0};
 const int DEFAULT_GRADIENT_DURATION = 5;
 const int ALARM_START_THRESHOLD_SECONDS = 1;
 const int MAX_FINISHED_TIME_SECONDS = 10;
@@ -152,7 +153,7 @@ class LightModel {
     this->startTime = millis();
   }
 
-  void deadTimer(int gradientDuration) {
+  void watchTimer(int gradientDuration) {
     if (!finished) {
       return;
     }
@@ -227,7 +228,7 @@ class ClockModel {
 
   private:
 
-  int timeToSeconds(const Time &t) {
+  unsigned long timeToSeconds(const Time &t) {
     long hours = t.hours;
     long minutes = hours * 60 + t.minutes;
     long seconds = minutes * 60 + t.seconds;
@@ -235,7 +236,7 @@ class ClockModel {
   }
 
   unsigned long startTime;
-  long secondsInDay = 24 * 60 * 60;
+  unsigned long secondsInDay = 24L * 60L * 60L;
 
   public:
 
@@ -243,23 +244,23 @@ class ClockModel {
 
   void setup() {
     rtc.begin();
-    rtc.settime(0, 0, 17, 13, 11, 21, 7); 
+    setTime(DEFAULT_CURRENT_TIME); 
   }
 
   String getCurrentTime() {
     return rtc.gettime("H:i:s");
   }
 
-  String setTime(const Time &time) {
-    rtc.settime(time.seconds, time.minutes, time.hours); 
+  void setTime(const Time &t) {
+    rtc.settime(t.seconds, t.minutes, t.hours, 13, 11, 21, 7); 
   }
 
   bool shouldGradientStart(const Time &alarm, int gradientDuration) {
-    long alarmSeconds = timeToSeconds(alarm);
-    long gradientStartSeconds = (alarmSeconds - gradientDuration + secondsInDay) % secondsInDay;
+    unsigned long alarmSeconds = timeToSeconds(alarm);
+    unsigned long gradientStartSeconds = (alarmSeconds - gradientDuration + secondsInDay) % secondsInDay;
     
-    long currentSeconds = timeToSeconds({rtc.hours + (rtc.midday ? 12 : 0), rtc.minutes, rtc.seconds});
-    long differenceSeconds = abs(currentSeconds - gradientStartSeconds);
+    unsigned long currentSeconds = timeToSeconds({rtc.hours + (rtc.midday ? 12 : 0), rtc.minutes, rtc.seconds});
+    unsigned long differenceSeconds = abs(currentSeconds - gradientStartSeconds);
     
     return differenceSeconds <= ALARM_START_THRESHOLD_SECONDS || differenceSeconds >= (secondsInDay - ALARM_START_THRESHOLD_SECONDS);
   }
@@ -680,7 +681,7 @@ class Controller {
   }
 
   void setup() {
-    //Serial.begin(9600);
+    Serial.begin(9600);
     lcdView.setup();
     clockModel.setup();
     irModel.setup();
@@ -699,7 +700,7 @@ class Controller {
       }
     }
 
-    lightModel.deadTimer(settingsModel.getGradientDuration());
+    lightModel.watchTimer(settingsModel.getGradientDuration());
 
     if (!lightModel.isFinished()) {
       if (!lightModel.isStarted()) {
