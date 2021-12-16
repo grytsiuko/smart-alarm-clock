@@ -3,41 +3,38 @@
 #include <iarduino_RTC.h>
 #include <IRremote.h>
 
+
+/*********************************************************** PINS ***********************************************************/
+
+
 const int RED_PIN = 5;
 const int GREEN_PIN = 10;
 const int BLUE_PIN = 9;
-const int RECV_PIN = 4;
+const int IR_RECV_PIN = 4;
+const int CLOCK_RST_PIN = 3;
+const int CLOCK_DAT_PIN = 2;
+const int CLOCK_CLK_PIN = 12;
 
-/*
- * FFA25D CH- 
- * FF629D CH
- * FFE21D CH+
- * FF22DD PREV
- * FF02FD NEXT
- * FFC23D PLAY/PAUSE
- * FFE01F VOL-
- * FFA857 VOL+
- * FF906F EQ
- * FF6897 0
- * FF9867 100+
- * FFB04F 200+
- * FF30CF 1
- * FF18E7 2
- * FF7A85 3
- * FF10EF 4
- * FF38C7 5
- * FF5AA5 6
- * FF42BD 7
- * FF4AB5 8
- * FF52AD 9
- */
+iarduino_RTC rtc(RTC_DS1302, CLOCK_RST_PIN, CLOCK_CLK_PIN, CLOCK_DAT_PIN);
+LiquidCrystal_I2C lcd(0x27,16,2);
+IRrecv irrecv(IR_RECV_PIN);
+decode_results results;
 
+
+/*********************************************************** SIGNALS ***********************************************************/
+
+
+const unsigned long SIGNAL_VOL_MINUS = 0xFFE01F;
+const unsigned long SIGNAL_VOL_PLUS = 0xFFA857;
+const unsigned long SIGNAL_PREV = 0xFF22DD;
+const unsigned long SIGNAL_NEXT = 0xFF02FD;
 const unsigned long SIGNAL_PLAY_PAUSE = 0xFFC23D;
 const unsigned long SIGNAL_CH_MINUS = 0xFFA25D;
 const unsigned long SIGNAL_CH = 0xFF629D;
 const unsigned long SIGNAL_CH_PLUS = 0xFFE21D;
-const unsigned long SIGNAL_VOL_MINUS = 0xFFE01F;
 const unsigned long SIGNAL_EQ = 0xFF906F;
+const unsigned long SIGNAL_100_PLUS = 0xFF9867;
+const unsigned long SIGNAL_200_PLUS = 0xFFB04F;
 const unsigned long SIGNAL_0 = 0xFF6897;
 const unsigned long SIGNAL_1 = 0xFF30CF;
 const unsigned long SIGNAL_2 = 0xFF18E7;
@@ -49,11 +46,15 @@ const unsigned long SIGNAL_7 = 0xFF42BD;
 const unsigned long SIGNAL_8 = 0xFF4AB5;
 const unsigned long SIGNAL_9 = 0xFF52AD;
 
-iarduino_RTC rtc(RTC_DS1302,3,12,2);
-LiquidCrystal_I2C lcd(0x27,16,2);
-IRrecv irrecv(RECV_PIN);
+const unsigned long ACTION_CLOCK = SIGNAL_CH_MINUS;
+const unsigned long ACTION_ALARM = SIGNAL_CH;
+const unsigned long ACTION_DURATION = SIGNAL_CH_PLUS;
+const unsigned long ACTION_SUBMIT = SIGNAL_EQ;
+const unsigned long ACTION_BACK = SIGNAL_VOL_MINUS;
 
-decode_results results;
+
+/*********************************************************** DATA STRUCTURES ***********************************************************/
+
 
 struct Color {
   int red;
@@ -67,8 +68,31 @@ struct Time {
   int seconds;
 };
 
-const Time DEFAULT_ALARM{23, 22, 20};
-const int ALARM_START_THRESHOLD_SECONDS = 2;
+enum StateTitle {
+    MAIN, CLOCK, ALARM, DURATION
+};
+
+const int STATE_INPUT_LENGTH = 6;
+struct State {
+  StateTitle title;
+  int input[STATE_INPUT_LENGTH];
+  int step;
+};
+
+
+/*********************************************************** CONFIGURATION ***********************************************************/
+
+
+const int STATE_INPUT_INTEGER_MAX_LENGTH = 3;
+const int STATE_INPUT_NAN = -1;
+
+const Time DEFAULT_ALARM{17, 0, 15};
+const int DEFAULT_GRADIENT_DURATION = 5;
+const int ALARM_START_THRESHOLD_SECONDS = 1;
+const int MAX_FINISHED_TIME_SECONDS = 10;
+
+const int DELAY_LENGTH = 10;
+const int LCD_UPDATE_DELAY_STEPS = 20;
 
 const int GRADIENT_LENGTH = 9;
 const Color GRADIENT_SEQUENCE[] = {
@@ -83,44 +107,8 @@ const Color GRADIENT_SEQUENCE[] = {
   {200, 200, 200}
 };
 
-const int MAX_FINISHED_TIME_SECONDS = 10;
 
-const int DELAY_LENGTH = 10;
-
-const int GRADIENT_DURATION_SECONDS = 5;
-const int GRADIENT_STEP_DURATION = GRADIENT_DURATION_SECONDS * 1000 / GRADIENT_LENGTH;
-const int GRADIENT_STEP_ITERATIONS = GRADIENT_STEP_DURATION / DELAY_LENGTH;
-
-const int LCD_UPDATE_DELAY_STEPS = 20;
-
-
-
-enum StateTitle {
-    MAIN, CLOCK, ALARM, DURATION
-};
-
-enum StateType {
-    NONE, TIME, INTEGER
-};
-
-const unsigned long ACTION_CLOCK = SIGNAL_CH_MINUS;
-const unsigned long ACTION_ALARM = SIGNAL_CH;
-const unsigned long ACTION_DURATION = SIGNAL_CH_PLUS;
-const unsigned long ACTION_SUBMIT = SIGNAL_EQ;
-const unsigned long ACTION_BACK = SIGNAL_VOL_MINUS;
-
-const int STATE_INPUT_LENGTH = 6;
-const int STATE_INPUT_INTEGER_MAX_LENGTH = 3;
-const int STATE_INPUT_NAN = -1;
-
-struct State {
-  StateTitle title;
-  StateType type;
-  int input[STATE_INPUT_LENGTH];
-  int step;
-};
-
-
+/*********************************************************** LIGHT MODEL ***********************************************************/
 
 
 class LightModel {
@@ -164,12 +152,12 @@ class LightModel {
     this->startTime = millis();
   }
 
-  void deadTimer() {
+  void deadTimer(int gradientDuration) {
     if (!finished) {
       return;
     }
     unsigned long currTime = millis();
-    if (currTime - startTime > 1000 * (MAX_FINISHED_TIME_SECONDS + GRADIENT_DURATION_SECONDS)) {
+    if (currTime - startTime > 1000 * (MAX_FINISHED_TIME_SECONDS + gradientDuration)) {
       reset();
     }
   }
@@ -230,6 +218,11 @@ class LightModel {
 };
 
 
+
+/*********************************************************** CLOCK MODEL ***********************************************************/
+
+
+
 class ClockModel {
 
   private:
@@ -248,14 +241,17 @@ class ClockModel {
 
   ClockModel() = default;
 
-
   void setup() {
     rtc.begin();
-    rtc.settime(10, 22, 23, 13, 11, 21, 7); 
+    rtc.settime(0, 0, 17, 13, 11, 21, 7); 
   }
 
   String getCurrentTime() {
     return rtc.gettime("H:i:s");
+  }
+
+  String setTime(const Time &time) {
+    rtc.settime(time.seconds, time.minutes, time.hours); 
   }
 
   bool shouldGradientStart(const Time &alarm, int gradientDuration) {
@@ -268,6 +264,9 @@ class ClockModel {
     return differenceSeconds <= ALARM_START_THRESHOLD_SECONDS || differenceSeconds >= (secondsInDay - ALARM_START_THRESHOLD_SECONDS);
   }
 };
+
+
+/*********************************************************** IR MODEL ***********************************************************/
 
 
 class IRModel {
@@ -284,7 +283,6 @@ class IRModel {
 
   unsigned long get() {
     if (irrecv.decode(&results)){
-      Serial.println(results.value, HEX);
       unsigned long value = results.value;
       irrecv.resume();
       return value;
@@ -294,12 +292,15 @@ class IRModel {
 };
 
 
+/*********************************************************** SETTINGS MODEL ***********************************************************/
+
+
 class SettingsModel {
 
   private:
 
   Time alarm = DEFAULT_ALARM;
-  int gradientDuration = GRADIENT_DURATION_SECONDS;
+  int gradientDuration = DEFAULT_GRADIENT_DURATION;
 
   public:
 
@@ -322,9 +323,14 @@ class SettingsModel {
   void setGradientDuration(int duration) {
     gradientDuration = duration;
   }
+
+  void setAlarm(const Time &alarmTime) {
+    alarm = alarmTime;
+  }
 };
 
 
+/*********************************************************** LIGHT VIEW ***********************************************************/
 
 
 class LightView {
@@ -341,6 +347,7 @@ class LightView {
 };
 
 
+/*********************************************************** LCD VIEW ***********************************************************/
 
 
 class LcdView {
@@ -397,6 +404,25 @@ class LcdView {
       for (int i = 0; i < state.step; i++) {
         lcd.print(state.input[i]);
       }
+      if (state.step < STATE_INPUT_INTEGER_MAX_LENGTH) {
+        lcd.print("_");
+      }
+  }
+
+  String getTimeInputIndex(const State &state, int index) {
+    if (index >= state.step) {
+      return "_"; 
+    }
+    return String(state.input[index]);
+  }
+
+  void printTimeInput(const State &state) {
+      lcd.setCursor(0, 1);
+      String result = "";
+      result += getTimeInputIndex(state, 0) + getTimeInputIndex(state, 1) + ":";
+      result += getTimeInputIndex(state, 2) + getTimeInputIndex(state, 3) + ":";
+      result += getTimeInputIndex(state, 4) + getTimeInputIndex(state, 5);
+      lcd.print(result);
   }
 
   public:
@@ -431,9 +457,11 @@ class LcdView {
         break;
       case CLOCK:
         printClockTitle();
+        printTimeInput(state);
         break;
       case ALARM:
         printAlarmTitle();
+        printTimeInput(state);
         break;
       default:
         printDurationTitle();
@@ -445,6 +473,8 @@ class LcdView {
 };
 
 
+/*********************************************************** STATE MODEL ***********************************************************/
+
 
 class StateModel {
 
@@ -455,16 +485,7 @@ class StateModel {
   State state = generateInitState(MAIN);
 
   State generateInitState(StateTitle title) {
-    switch (title) {
-      case MAIN:
-        return {MAIN, NONE, {0}, 0};
-      case CLOCK:
-        return {CLOCK, TIME, {0}, 0};
-      case ALARM:
-        return {ALARM, TIME, {0}, 0};
-      default:
-        return {DURATION, INTEGER, {0}, 0};
-    }
+    return {title, {0}, 0};
   }
 
   int getNumberBySignal(unsigned long signal) {
@@ -505,6 +526,29 @@ class StateModel {
     state.step++;
   }
 
+  void proceedTimeStep(int number) {
+    switch(state.step) {
+      case 0:
+        if (number > 2) {
+          return;
+        }
+        break;
+      case 1:
+        if (state.input[0] == 2 && number > 3) {
+          return;
+        }
+        break;
+      case 2:
+      case 4:
+        if (number > 5) {
+          return;
+        }
+        break;
+    }
+    state.input[state.step] = number;
+    state.step++;
+  }
+
   void submitDuration() {
     if (state.step == 0) {
       return;
@@ -516,6 +560,31 @@ class StateModel {
       result += state.input[i];
     }
     settingsModel.setGradientDuration(result);
+    state = generateInitState(MAIN);
+  }
+
+  void submitClock() {
+    if (state.step != 6) {
+      return;
+    }
+
+    int hours = state.input[0] * 10 + state.input[1];
+    int minutes = state.input[2] * 10 + state.input[3];
+    int seconds = state.input[4] * 10 + state.input[5];
+    clockModel.setTime({hours, minutes, seconds});
+    state = generateInitState(MAIN);
+  }
+
+  void submitAlarm() {
+    if (state.step != 6) {
+      return;
+    }
+
+    int hours = state.input[0] * 10 + state.input[1];
+    int minutes = state.input[2] * 10 + state.input[3];
+    int seconds = state.input[4] * 10 + state.input[5];
+    settingsModel.setAlarm({hours, minutes, seconds});
+    state = generateInitState(MAIN);
   }
 
   public:
@@ -525,6 +594,7 @@ class StateModel {
   }
 
   void processSignal(unsigned long signal) {
+    int number;
     switch (state.title) {
       
       case MAIN:
@@ -543,11 +613,25 @@ class StateModel {
         if (signal == ACTION_BACK) {
           state = generateInitState(MAIN);
         }
+        number = getNumberBySignal(signal);
+        if (number != STATE_INPUT_NAN) {
+          proceedTimeStep(number);
+        }
+        if (signal == ACTION_SUBMIT) {
+          submitClock();
+        }
         break;
         
       case ALARM:
         if (signal == ACTION_BACK) {
           state = generateInitState(MAIN);
+        }
+        number = getNumberBySignal(signal);
+        if (number != STATE_INPUT_NAN) {
+          proceedTimeStep(number);
+        }
+        if (signal == ACTION_SUBMIT) {
+          submitAlarm();
         }
         break;
         
@@ -555,13 +639,12 @@ class StateModel {
         if (signal == ACTION_BACK) {
           state = generateInitState(MAIN);
         }
-        int number = getNumberBySignal(signal);
+        number = getNumberBySignal(signal);
         if (number != STATE_INPUT_NAN) {
           proceedIntegerStep(number);
         }
         if (signal == ACTION_SUBMIT) {
           submitDuration();
-          state = generateInitState(MAIN);
         }
         break;
     }
@@ -571,6 +654,8 @@ class StateModel {
   }
 };
 
+
+/*********************************************************** CONTROLLER ***********************************************************/
 
 
 class Controller {
@@ -595,7 +680,7 @@ class Controller {
   }
 
   void setup() {
-    Serial.begin(9600);
+    //Serial.begin(9600);
     lcdView.setup();
     clockModel.setup();
     irModel.setup();
@@ -614,7 +699,7 @@ class Controller {
       }
     }
 
-    lightModel.deadTimer();
+    lightModel.deadTimer(settingsModel.getGradientDuration());
 
     if (!lightModel.isFinished()) {
       if (!lightModel.isStarted()) {
@@ -630,6 +715,9 @@ class Controller {
     lcdView.update(stateModel.getState(), lightModel.getStatus(), lightModel.getProgress(), clockModel.getCurrentTime(), settingsModel.getAlarm(), settingsModel.getGradientDuration());
   }
 };
+
+
+/*********************************************************** MAIN ***********************************************************/
 
 
 
